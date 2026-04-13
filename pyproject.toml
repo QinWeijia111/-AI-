@@ -1,0 +1,14 @@
+[project]
+name = "ct-solver"
+version = "0.1.0"
+description = "计算理论大作业：AI 题目解析与求解"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+step1 = "scripts.run_step1:main"
+step2 = "scripts.run_step2:main"
