@@ -15,7 +15,10 @@ from ct_solver.prompts import STEP1_SYSTEM_PROMPT
 def create_client() -> OpenAI:
     """从环境变量创建 Qwen API 客户端。"""
     base_url = os.environ.get("QWEN_BASE_URL", "http://127.0.0.1:8317")
-    api_key = os.environ.get("QWEN_API_KEY", "sk-JHpV94x2aQrYgA6OX")
+    # 如果 base_url 不以 /v1 结尾，自动添加（OpenAI SDK 会拼接 /chat/completions）
+    if not base_url.rstrip("/").endswith("/v1"):
+        base_url = base_url.rstrip("/") + "/v1"
+    api_key = os.environ.get("QWEN_API_KEY", "")
     return OpenAI(base_url=base_url, api_key=api_key)
 
 
@@ -71,7 +74,7 @@ def parse_problem(client: OpenAI, model: str, problem: Problem) -> str:
     # 添加文字提示
     image_info = ""
     if problem.has_diagram:
-        image_info = f"\n（本题包含 {len(problem.diagram_images)} 张题干图和 {len(problem.diagram_images)} 张题图，请全部识别）"
+        image_info = f"\n（本题包含 {len(problem.question_images)} 张题干图和 {len(problem.diagram_images)} 张题图，请全部识别）"
     else:
         image_info = f"\n（本题包含 {len(problem.question_images)} 张题干图，请识别）"
 
