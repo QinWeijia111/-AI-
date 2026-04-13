@@ -229,8 +229,9 @@ def _chapter_sort_key(name: str) -> int:
         return 999
 
 
-def _problem_sort_key(name: str) -> float:
+def _problem_sort_key(name: str) -> tuple[int, int]:
     try:
-        return float(name)
+        chapter_str, problem_str = name.split(".", 1)
+        return int(chapter_str), int(problem_str)
     except ValueError:
-        return 999.0
+        return 999, 999

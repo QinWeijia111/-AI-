@@ -139,6 +139,16 @@ STEP2_CONCURRENCY=6
 uv run python scripts/run_step1.py
 ```
 
+### 重建汇总文件（不重新调用模型）
+
+如果只需要修复 `output/all_problems.md` 和 `solutions/all_solutions.md` 的排序或重新汇总，而不想重新调用 Qwen / DeepSeek，可执行：
+
+```bash
+uv run python scripts/rebuild_summaries.py
+```
+
+该脚本会根据现有的逐题结果重新生成两个总汇总文件。
+
 ### 只运行指定章节
 
 ```bash
