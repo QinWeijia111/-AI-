@@ -28,6 +28,7 @@ def main():
     solutions_dir = Path(os.environ.get("SOLUTIONS_DIR", "solutions"))
     model = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
     timeout_seconds = int(os.environ.get("STEP_TIMEOUT_SECONDS", "300"))
+    concurrency = int(os.environ.get("STEP2_CONCURRENCY", "6"))
 
     # 导入模块
     sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -68,7 +69,7 @@ def main():
 
     for chapter_name in chapters:
         print(f"\n{'='*60}")
-        print(f"解题 {chapter_name}（单题超时 {timeout_seconds} 秒）")
+        print(f"解题 {chapter_name}（单题超时 {timeout_seconds} 秒，并发 {concurrency}）")
         print(f"{'='*60}")
 
         summary = solve_all_chapter(client, model, chapter_name, parsed_dir, solutions_dir)

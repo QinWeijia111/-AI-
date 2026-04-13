@@ -15,11 +15,11 @@ wheels/
 # Environment
 .env
 
-# Output (generated)
+# Generated outputs
 output/
 solutions/
 
-# 题目图片（太大不提交）
+# Source images / assignment assets
 计算理论课后题/
 
 # IDE

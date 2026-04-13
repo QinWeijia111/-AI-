@@ -5,6 +5,7 @@
 """
 
 import os
+import re
 from pathlib import Path
 from openai import APITimeoutError, OpenAI
 
@@ -41,6 +42,41 @@ def encode_image(image_path: str) -> str:
         encoded = base64.b64encode(f.read()).decode("utf-8")
 
     return f"data:{mime};base64,{encoded}"
+
+
+def normalize_mermaid_code(markdown_text: str) -> str:
+    """对识别结果中的 Mermaid 代码做轻量修正。"""
+    if "### 题图 Mermaid" not in markdown_text or "```mermaid" not in markdown_text:
+        return markdown_text
+
+    try:
+        prefix, suffix = markdown_text.split("```mermaid", 1)
+        mermaid_body, rest = suffix.split("```", 1)
+    except ValueError:
+        return markdown_text
+
+    lines = [line.rstrip() for line in mermaid_body.strip().splitlines() if line.strip()]
+    normalized_lines: list[str] = []
+
+    for line in lines:
+        line = line.replace("→", "-->")
+
+        if line.startswith("stateDiagram-v2"):
+            normalized_lines.append(line)
+            continue
+        if line.startswith("graph "):
+            normalized_lines.append(line)
+            continue
+
+        line = re.sub(r"(\[\*\]\s*-->\s*)(\d+)(\b)", r"\1s\2[\2]", line)
+        line = re.sub(r"(?<![A-Za-z_])(\d+)(\s*-->\s*)(\d+)(?![A-Za-z_\[])", r"s\1[\1]\2s\3[\3]", line)
+        line = re.sub(r"(?<![A-Za-z_])(\d+)(\s*---\s*)(\d+)(?![A-Za-z_\[])", r"s\1[\1]\2s\3[\3]", line)
+        line = re.sub(r"(?<![A-Za-z_])(\d+)(\s*-\.->\s*)(\d+)(?![A-Za-z_\[])", r"s\1[\1]\2s\3[\3]", line)
+
+        normalized_lines.append(line)
+
+    normalized_mermaid = "\n".join(normalized_lines)
+    return prefix + "```mermaid\n" + normalized_mermaid + "\n```" + rest
 
 
 def parse_problem(client: OpenAI, model: str, problem: Problem) -> str:
@@ -138,6 +174,7 @@ def parse_all_chapter(client: OpenAI, model: str, chapter_name: str,
         print(f"  [{i+1}/{len(chapter_problems)}] 识别 {problem.problem_id}...")
         try:
             content = parse_problem(client, model, problem)
+            content = normalize_mermaid_code(content)
             out_path = save_parsed(problem, content, output_dir / "parsed")
             completed.append({"problem_id": problem.problem_id, "path": str(out_path)})
             print(f"    -> 已保存到 {out_path}")

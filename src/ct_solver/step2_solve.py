@@ -5,6 +5,8 @@
 """
 
 import os
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from openai import APITimeoutError, OpenAI
 
@@ -20,6 +22,13 @@ def create_client() -> OpenAI:
         raise ValueError("请设置环境变量 DEEPSEEK_API_KEY")
     timeout_seconds = int(os.environ.get("STEP_TIMEOUT_SECONDS", "300"))
     return OpenAI(base_url=base_url, api_key=api_key, timeout=timeout_seconds)
+
+
+def normalize_latex_markdown(text: str) -> str:
+    r"""将 \(...\) / \[...\] 转为 Markdown 兼容的 $...$ / $$...$$。"""
+    text = re.sub(r"\\\[(.*?)\\\]", r"$$\1$$", text, flags=re.DOTALL)
+    text = re.sub(r"\\\((.*?)\\\)", r"$\1$", text, flags=re.DOTALL)
+    return text
 
 
 def solve_problem(client: OpenAI, model: str, chapter: str,
@@ -51,7 +60,7 @@ def solve_problem(client: OpenAI, model: str, chapter: str,
         max_tokens=8192,
     )
 
-    return response.choices[0].message.content
+    return normalize_latex_markdown(response.choices[0].message.content)
 
 
 def parse_parsed_md(file_path: Path) -> tuple[str, str | None]:
@@ -117,6 +126,28 @@ def save_solution(chapter: str, problem_id: str,
     return output_path
 
 
+def _solve_one_problem(client: OpenAI, model: str, chapter_name: str,
+                       problem_file: Path, solutions_dir: Path) -> dict[str, str]:
+    """并发 worker：解一道题并返回结果摘要。"""
+    problem_id = problem_file.stem
+    solution_file = solutions_dir / "per_problem" / chapter_name / f"{problem_id}.md"
+
+    if solution_file.exists():
+        return {"status": "completed", "problem_id": problem_id, "path": str(solution_file)}
+
+    question_text, mermaid_code = parse_parsed_md(problem_file)
+    solution_text = solve_problem(
+        client, model, chapter_name, problem_id,
+        question_text, mermaid_code
+    )
+    out_path = save_solution(
+        chapter_name, problem_id,
+        question_text, mermaid_code,
+        solution_text, solutions_dir
+    )
+    return {"status": "completed", "problem_id": problem_id, "path": str(out_path)}
+
+
 def solve_all_chapter(client: OpenAI, model: str, chapter_name: str,
                       parsed_dir: Path, solutions_dir: Path) -> dict[str, list[dict[str, str]]]:
     """解题指定章节的所有题目。
@@ -132,7 +163,6 @@ def solve_all_chapter(client: OpenAI, model: str, chapter_name: str,
         print(f"  解析目录不存在: {chapter_parsed_dir}")
         return {"completed": [], "unfinished": []}
 
-    # 获取所有解析文件
     problem_files = sorted(
         [f for f in chapter_parsed_dir.iterdir() if f.suffix == ".md"],
         key=lambda f: _problem_sort_key(f.stem)
@@ -144,41 +174,35 @@ def solve_all_chapter(client: OpenAI, model: str, chapter_name: str,
 
     completed = []
     unfinished = []
-    for i, pf in enumerate(problem_files):
-        problem_id = pf.stem
-        solution_file = solutions_dir / "per_problem" / chapter_name / f"{problem_id}.md"
+    concurrency = max(1, int(os.environ.get("STEP2_CONCURRENCY", "6")))
 
-        # 断点续传
-        if solution_file.exists():
-            print(f"  [{i+1}/{len(problem_files)}] 跳过 {problem_id} (已存在)")
-            completed.append({"problem_id": problem_id, "path": str(solution_file)})
-            continue
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        future_to_problem = {
+            executor.submit(_solve_one_problem, client, model, chapter_name, pf, solutions_dir): pf
+            for pf in problem_files
+        }
 
-        # 解析 Step 1 结果
-        question_text, mermaid_code = parse_parsed_md(pf)
+        for future in as_completed(future_to_problem):
+            pf = future_to_problem[future]
+            problem_id = pf.stem
+            try:
+                result = future.result()
+                completed.append({
+                    "problem_id": result["problem_id"],
+                    "path": result["path"],
+                })
+                print(f"  完成 {problem_id} -> {result['path']}")
+            except APITimeoutError:
+                reason = "超时（超过 5 分钟）"
+                unfinished.append({"problem_id": problem_id, "reason": reason})
+                print(f"  未完成 {problem_id}: {reason}")
+            except Exception as e:
+                reason = f"错误: {e}"
+                unfinished.append({"problem_id": problem_id, "reason": reason})
+                print(f"  未完成 {problem_id}: {reason}")
 
-        print(f"  [{i+1}/{len(problem_files)}] 解题 {problem_id}...")
-        try:
-            solution_text = solve_problem(
-                client, model, chapter_name, problem_id,
-                question_text, mermaid_code
-            )
-            out_path = save_solution(
-                chapter_name, problem_id,
-                question_text, mermaid_code,
-                solution_text, solutions_dir
-            )
-            completed.append({"problem_id": problem_id, "path": str(out_path)})
-            print(f"    -> 已保存到 {out_path}")
-        except APITimeoutError:
-            reason = "超时（超过 5 分钟）"
-            unfinished.append({"problem_id": problem_id, "reason": reason})
-            print(f"    -> 未完成: {reason}")
-        except Exception as e:
-            reason = f"错误: {e}"
-            unfinished.append({"problem_id": problem_id, "reason": reason})
-            print(f"    -> 未完成: {reason}")
-
+    completed.sort(key=lambda item: _problem_sort_key(item["problem_id"]))
+    unfinished.sort(key=lambda item: _problem_sort_key(item["problem_id"]))
     return {"completed": completed, "unfinished": unfinished}
 
 
