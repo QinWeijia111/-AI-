@@ -6,7 +6,7 @@
 
 import os
 from pathlib import Path
-from openai import OpenAI
+from openai import APITimeoutError, OpenAI
 
 from ct_solver.scanner import Problem, scan_problems
 from ct_solver.prompts import STEP1_SYSTEM_PROMPT
@@ -19,7 +19,8 @@ def create_client() -> OpenAI:
     if not base_url.rstrip("/").endswith("/v1"):
         base_url = base_url.rstrip("/") + "/v1"
     api_key = os.environ.get("QWEN_API_KEY", "")
-    return OpenAI(base_url=base_url, api_key=api_key)
+    timeout_seconds = int(os.environ.get("STEP_TIMEOUT_SECONDS", "300"))
+    return OpenAI(base_url=base_url, api_key=api_key, timeout=timeout_seconds)
 
 
 def encode_image(image_path: str) -> str:
@@ -107,39 +108,49 @@ def save_parsed(problem: Problem, content: str, output_dir: Path) -> Path:
 
 
 def parse_all_chapter(client: OpenAI, model: str, chapter_name: str,
-                      image_dir: Path, output_dir: Path) -> list[tuple[str, str]]:
+                      image_dir: Path, output_dir: Path) -> dict[str, list[dict[str, str]]]:
     """解析指定章节的所有题目。
 
     Returns:
-        [(problem_id, output_path_str), ...]
+        {
+            "completed": [{"problem_id": ..., "path": ...}],
+            "unfinished": [{"problem_id": ..., "reason": ...}],
+        }
     """
     all_problems = scan_problems(image_dir)
     chapter_problems = [p for p in all_problems if p.chapter == chapter_name]
 
     if not chapter_problems:
         print(f"  未在 {chapter_name} 中找到题目")
-        return []
+        return {"completed": [], "unfinished": []}
 
-    results = []
+    completed = []
+    unfinished = []
     for i, problem in enumerate(chapter_problems):
         parsed_file = output_dir / "parsed" / problem.chapter / f"{problem.problem_id}.md"
 
         # 断点续传：跳过已解析的题目
         if parsed_file.exists():
             print(f"  [{i+1}/{len(chapter_problems)}] 跳过 {problem.problem_id} (已存在)")
-            results.append((problem.problem_id, str(parsed_file)))
+            completed.append({"problem_id": problem.problem_id, "path": str(parsed_file)})
             continue
 
         print(f"  [{i+1}/{len(chapter_problems)}] 识别 {problem.problem_id}...")
         try:
             content = parse_problem(client, model, problem)
-            out_path = save_parsed(problem, content, output_dir)
-            results.append((problem.problem_id, str(out_path)))
+            out_path = save_parsed(problem, content, output_dir / "parsed")
+            completed.append({"problem_id": problem.problem_id, "path": str(out_path)})
             print(f"    -> 已保存到 {out_path}")
+        except APITimeoutError:
+            reason = "超时（超过 5 分钟）"
+            unfinished.append({"problem_id": problem.problem_id, "reason": reason})
+            print(f"    -> 未完成: {reason}")
         except Exception as e:
-            print(f"    -> 错误: {e}")
+            reason = f"错误: {e}"
+            unfinished.append({"problem_id": problem.problem_id, "reason": reason})
+            print(f"    -> 未完成: {reason}")
 
-    return results
+    return {"completed": completed, "unfinished": unfinished}
 
 
 def generate_all_problems_md(output_dir: Path) -> Path:

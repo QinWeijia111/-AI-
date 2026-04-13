@@ -6,7 +6,7 @@
 
 import os
 from pathlib import Path
-from openai import OpenAI
+from openai import APITimeoutError, OpenAI
 
 from ct_solver.scanner import scan_problems
 from ct_solver.prompts import STEP2_SYSTEM_PROMPT
@@ -18,7 +18,8 @@ def create_client() -> OpenAI:
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not api_key:
         raise ValueError("请设置环境变量 DEEPSEEK_API_KEY")
-    return OpenAI(base_url=base_url, api_key=api_key)
+    timeout_seconds = int(os.environ.get("STEP_TIMEOUT_SECONDS", "300"))
+    return OpenAI(base_url=base_url, api_key=api_key, timeout=timeout_seconds)
 
 
 def solve_problem(client: OpenAI, model: str, chapter: str,
@@ -117,16 +118,19 @@ def save_solution(chapter: str, problem_id: str,
 
 
 def solve_all_chapter(client: OpenAI, model: str, chapter_name: str,
-                      parsed_dir: Path, solutions_dir: Path) -> list[tuple[str, str]]:
+                      parsed_dir: Path, solutions_dir: Path) -> dict[str, list[dict[str, str]]]:
     """解题指定章节的所有题目。
 
     Returns:
-        [(problem_id, output_path_str), ...]
+        {
+            "completed": [{"problem_id": ..., "path": ...}],
+            "unfinished": [{"problem_id": ..., "reason": ...}],
+        }
     """
     chapter_parsed_dir = parsed_dir / chapter_name
     if not chapter_parsed_dir.exists():
         print(f"  解析目录不存在: {chapter_parsed_dir}")
-        return []
+        return {"completed": [], "unfinished": []}
 
     # 获取所有解析文件
     problem_files = sorted(
@@ -136,9 +140,10 @@ def solve_all_chapter(client: OpenAI, model: str, chapter_name: str,
 
     if not problem_files:
         print(f"  未在 {chapter_name} 中找到解析文件")
-        return []
+        return {"completed": [], "unfinished": []}
 
-    results = []
+    completed = []
+    unfinished = []
     for i, pf in enumerate(problem_files):
         problem_id = pf.stem
         solution_file = solutions_dir / "per_problem" / chapter_name / f"{problem_id}.md"
@@ -146,7 +151,7 @@ def solve_all_chapter(client: OpenAI, model: str, chapter_name: str,
         # 断点续传
         if solution_file.exists():
             print(f"  [{i+1}/{len(problem_files)}] 跳过 {problem_id} (已存在)")
-            results.append((problem_id, str(solution_file)))
+            completed.append({"problem_id": problem_id, "path": str(solution_file)})
             continue
 
         # 解析 Step 1 结果
@@ -163,12 +168,18 @@ def solve_all_chapter(client: OpenAI, model: str, chapter_name: str,
                 question_text, mermaid_code,
                 solution_text, solutions_dir
             )
-            results.append((problem_id, str(out_path)))
+            completed.append({"problem_id": problem_id, "path": str(out_path)})
             print(f"    -> 已保存到 {out_path}")
+        except APITimeoutError:
+            reason = "超时（超过 5 分钟）"
+            unfinished.append({"problem_id": problem_id, "reason": reason})
+            print(f"    -> 未完成: {reason}")
         except Exception as e:
-            print(f"    -> 错误: {e}")
+            reason = f"错误: {e}"
+            unfinished.append({"problem_id": problem_id, "reason": reason})
+            print(f"    -> 未完成: {reason}")
 
-    return results
+    return {"completed": completed, "unfinished": unfinished}
 
 
 def generate_all_solutions_md(solutions_dir: Path) -> Path:
